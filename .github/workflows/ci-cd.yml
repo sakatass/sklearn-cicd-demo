@@ -2,7 +2,7 @@ name: ci-cd
 on:
   push:
     branches: [ main ]
-  pull_request:
+  workflow_dispatch:
 
 env:
   IMAGE: ghcr.io/sakatass/sklearn-cicd-demo:${{ github.sha }}
@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write         # нужно, чтобы пушить образ в GHCR
+      packages: write   # пушим образ в GHCR
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -22,26 +22,33 @@ jobs:
       - name: Train & write model
         run: python train.py
       - name: Unit tests
-        run: pytest -q
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest -q
       - name: Build & push image to GHCR
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u $GITHUB_ACTOR --password-stdin
-          docker build -t $IMAGE .
-          docker push $IMAGE
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
 
   deploy-stage:
+    if: github.event_name == 'push'
     needs: ci
-    runs-on: [self-hosted, local, stage]   # твой локальный раннер
+    runs-on: [self-hosted, local, stage]
     permissions:
-      packages: read
       contents: read
+      packages: read      # тянуть образ из GHCR
     steps:
       - uses: actions/checkout@v4
-      - name: Pull & up stage
+      - name: Install test deps (for smoke/E2E)
+        shell: pwsh
+        run: pip install -r requirements.txt
+      - name: Set GIT_SHA env
+        shell: pwsh
+        run: echo "GIT_SHA=${{ github.sha }}" >> $env:GITHUB_ENV
+      - name: Deploy stage
         shell: pwsh
         run: |
-          $env:GIT_SHA="${{ github.sha }}"
-          echo "Using image $env:GIT_SHA"
           docker login ghcr.io -u $env:GITHUB_ACTOR -p $env:GITHUB_TOKEN
           docker compose -f docker-compose.stage.yml pull
           docker compose -f docker-compose.stage.yml up -d --remove-orphans
@@ -52,6 +59,7 @@ jobs:
         run: python tests/smoke.py
 
   e2e-stage:
+    if: github.event_name == 'push'
     needs: deploy-stage
     runs-on: [self-hosted, local, stage]
     steps:
@@ -66,17 +74,20 @@ jobs:
         run: pytest -q tests_stage
 
   deploy-prod:
+    if: github.event_name == 'push'
     needs: e2e-stage
     runs-on: [self-hosted, local, prod]
     permissions:
-      packages: read
       contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
-      - name: Pull & up prod
+      - name: Set GIT_SHA env
+        shell: pwsh
+        run: echo "GIT_SHA=${{ github.sha }}" >> $env:GITHUB_ENV
+      - name: Deploy prod
         shell: pwsh
         run: |
-          $env:GIT_SHA="${{ github.sha }}"
           docker login ghcr.io -u $env:GITHUB_ACTOR -p $env:GITHUB_TOKEN
           docker compose -f docker-compose.prod.yml pull
           docker compose -f docker-compose.prod.yml up -d --remove-orphans
