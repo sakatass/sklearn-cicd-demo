@@ -21,10 +21,10 @@ jobs:
         run: pip install -r requirements.txt
       - name: Train & write model
         run: python train.py
-      - name: Unit tests
+      - name: Unit tests (only fast tests/)
         env:
           PYTHONPATH: ${{ github.workspace }}
-        run: python -m pytest -q
+        run: python -m pytest -q tests
       - name: Build & push image to GHCR
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u $GITHUB_ACTOR --password-stdin
@@ -37,7 +37,7 @@ jobs:
     runs-on: [self-hosted, local, stage]
     permissions:
       contents: read
-      packages: read      # тянуть образ из GHCR
+      packages: read
     steps:
       - uses: actions/checkout@v4
       - name: Install test deps (for smoke/E2E)
@@ -52,6 +52,17 @@ jobs:
           docker login ghcr.io -u $env:GITHUB_ACTOR -p $env:GITHUB_TOKEN
           docker compose -f docker-compose.stage.yml pull
           docker compose -f docker-compose.stage.yml up -d --remove-orphans
+      - name: Wait for stage to be ready
+        shell: pwsh
+        env:
+          URL: http://localhost:8080/healthz
+        run: |
+          $max=30; $ok=$false
+          for ($i=1; $i -le $max; $i++) {
+            try { $r = Invoke-WebRequest $env:URL -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -eq 200) { $ok=$true; break } }
+            catch { Start-Sleep -Seconds 2 }
+          }
+          if (-not $ok) { throw "Stage not ready on $env:URL" }
       - name: Smoke on stage
         shell: pwsh
         env:
@@ -71,7 +82,7 @@ jobs:
         shell: pwsh
         env:
           STAGE_URL: http://localhost:8080
-        run: pytest -q tests_stage
+        run: python -m pytest -q tests_stage
 
   deploy-prod:
     if: github.event_name == 'push'
