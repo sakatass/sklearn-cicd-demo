@@ -48,10 +48,6 @@ jobs:
       - name: Set GIT_SHA env
         shell: powershell
         run: Add-Content -Path $env:GITHUB_ENV -Value "GIT_SHA=${{ github.sha }}"
-      - name: Auth to GHCR
-        shell: powershell
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       - name: Deploy stage
         shell: powershell
         run: |
@@ -103,10 +99,6 @@ jobs:
       - name: Set GIT_SHA env
         shell: powershell
         run: Add-Content -Path $env:GITHUB_ENV -Value "GIT_SHA=${{ github.sha }}"
-      - name: Auth to GHCR
-        shell: powershell
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       - name: Deploy prod
         shell: powershell
         run: |
