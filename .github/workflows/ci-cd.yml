@@ -117,3 +117,4 @@ jobs:
         env:
           URL: http://localhost:9090
         run: python tests/smoke.py
+
