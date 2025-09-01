@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write   # пушим образ в GHCR
+      packages: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -40,20 +40,22 @@ jobs:
       packages: read
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
       - name: Install test deps (for smoke/E2E)
-        shell: pwsh
-        run: pip install -r requirements.txt
+        shell: powershell
+        run: python -m pip install -r requirements.txt
       - name: Set GIT_SHA env
-        shell: pwsh
-        run: echo "GIT_SHA=${{ github.sha }}" >> $env:GITHUB_ENV
+        shell: powershell
+        run: Add-Content -Path $env:GITHUB_ENV -Value "GIT_SHA=${{ github.sha }}"
       - name: Deploy stage
-        shell: pwsh
+        shell: powershell
         run: |
           docker login ghcr.io -u $env:GITHUB_ACTOR -p $env:GITHUB_TOKEN
           docker compose -f docker-compose.stage.yml pull
           docker compose -f docker-compose.stage.yml up -d --remove-orphans
       - name: Wait for stage to be ready
-        shell: pwsh
+        shell: powershell
         env:
           URL: http://localhost:8080/healthz
         run: |
@@ -64,7 +66,7 @@ jobs:
           }
           if (-not $ok) { throw "Stage not ready on $env:URL" }
       - name: Smoke on stage
-        shell: pwsh
+        shell: powershell
         env:
           URL: http://localhost:8080
         run: python tests/smoke.py
@@ -75,11 +77,13 @@ jobs:
     runs-on: [self-hosted, local, stage]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
       - name: Install test deps
-        shell: pwsh
-        run: pip install -r requirements.txt
+        shell: powershell
+        run: python -m pip install -r requirements.txt
       - name: E2E tests against stage
-        shell: pwsh
+        shell: powershell
         env:
           STAGE_URL: http://localhost:8080
         run: python -m pytest -q tests_stage
@@ -94,16 +98,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Set GIT_SHA env
-        shell: pwsh
-        run: echo "GIT_SHA=${{ github.sha }}" >> $env:GITHUB_ENV
+        shell: powershell
+        run: Add-Content -Path $env:GITHUB_ENV -Value "GIT_SHA=${{ github.sha }}"
       - name: Deploy prod
-        shell: pwsh
+        shell: powershell
         run: |
           docker login ghcr.io -u $env:GITHUB_ACTOR -p $env:GITHUB_TOKEN
           docker compose -f docker-compose.prod.yml pull
           docker compose -f docker-compose.prod.yml up -d --remove-orphans
       - name: Smoke on prod
-        shell: pwsh
+        shell: powershell
         env:
           URL: http://localhost:9090
         run: python tests/smoke.py
