@@ -1,0 +1,87 @@
+name: ci-cd
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+env:
+  IMAGE: ghcr.io/sakatass/sklearn-cicd-demo:${{ github.sha }}
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write         # нужно, чтобы пушить образ в GHCR
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Train & write model
+        run: python train.py
+      - name: Unit tests
+        run: pytest -q
+      - name: Build & push image to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u $GITHUB_ACTOR --password-stdin
+          docker build -t $IMAGE .
+          docker push $IMAGE
+
+  deploy-stage:
+    needs: ci
+    runs-on: [self-hosted, local, stage]   # твой локальный раннер
+    permissions:
+      packages: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull & up stage
+        shell: pwsh
+        run: |
+          $env:GIT_SHA="${{ github.sha }}"
+          echo "Using image $env:GIT_SHA"
+          docker login ghcr.io -u $env:GITHUB_ACTOR -p $env:GITHUB_TOKEN
+          docker compose -f docker-compose.stage.yml pull
+          docker compose -f docker-compose.stage.yml up -d --remove-orphans
+      - name: Smoke on stage
+        shell: pwsh
+        env:
+          URL: http://localhost:8080
+        run: python tests/smoke.py
+
+  e2e-stage:
+    needs: deploy-stage
+    runs-on: [self-hosted, local, stage]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test deps
+        shell: pwsh
+        run: pip install -r requirements.txt
+      - name: E2E tests against stage
+        shell: pwsh
+        env:
+          STAGE_URL: http://localhost:8080
+        run: pytest -q tests_stage
+
+  deploy-prod:
+    needs: e2e-stage
+    runs-on: [self-hosted, local, prod]
+    permissions:
+      packages: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull & up prod
+        shell: pwsh
+        run: |
+          $env:GIT_SHA="${{ github.sha }}"
+          docker login ghcr.io -u $env:GITHUB_ACTOR -p $env:GITHUB_TOKEN
+          docker compose -f docker-compose.prod.yml pull
+          docker compose -f docker-compose.prod.yml up -d --remove-orphans
+      - name: Smoke on prod
+        shell: pwsh
+        env:
+          URL: http://localhost:9090
+        run: python tests/smoke.py

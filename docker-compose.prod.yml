@@ -1,0 +1,9 @@
+version: "3.9"
+services:
+  app:
+    image: ghcr.io/sakatass/sklearn-cicd-demo:${GIT_SHA}
+    environment:
+      GIT_SHA: ${GIT_SHA}
+      MODEL_PATH: /app/model.pkl
+    ports:
+      - "9090:8080"
