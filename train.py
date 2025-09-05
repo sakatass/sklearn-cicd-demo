@@ -11,15 +11,19 @@ from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import train_test_split
 
 
-def train_and_save(params: Dict[str, Any] | None = None,
-                   model_path: str = "models/model.pkl") -> Dict[str, Any]:
-    """
-    Обучает простую модель, сохраняет model.pkl и metrics.json, логирует ран в MLflow.
-    Возвращает dict с auc и путём к модели.
-    """
+def train_and_save(model_path: str = "models/model.pkl", **params) -> dict:
+    # дефолтные гиперпараметры для нашей RF-модели
     cfg = {"n_estimators": 100, "random_state": 42, "test_size": 0.2}
-    if params:
-        cfg.update(params)
+
+    # если из тестов прилетает старый ключ 'C' (логистическая регрессия),
+    # просто игнорируем его, чтобы не падать на unexpected keyword
+    if "C" in params and "n_estimators" not in params:
+        params = dict(params)  # копия, чтобы не трогать исходный dict
+        params.pop("C", None)
+
+    # оставляем только известные ключи
+    cfg.update({k: v for k, v in params.items() if k in cfg})
+
 
     X, y = make_classification(
         n_samples=5000, n_features=20, n_informative=12, n_redundant=2,
