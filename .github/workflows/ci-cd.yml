@@ -27,6 +27,17 @@ jobs:
         run: pip install -r requirements.txt
       - name: Train & write model
         run: python train.py
+
+      - name: Upload model artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-${{ github.sha }}
+          path: |
+            models/model.pkl
+            metrics.json
+          if-no-files-found: error
+          retention-days: 3
+
       - name: Unit tests (only fast tests/)
         env:
           PYTHONPATH: ${{ github.workspace }}
@@ -57,9 +68,15 @@ jobs:
         run: |
           if (!(Test-Path ".dvc")) { dvc init -q }
           if (-not (dvc remote list)) { mkdir dvcstore; dvc remote add -d localremote .\dvcstore }
-      - name: DVC pull
-        shell: powershell
-        run: dvc pull
+      - name: Try DVC pull (best-effort)
+        shell: pwsh
+        run: dvc pull || echo "DVC remote not configured — will use artifact"
+
+      - name: Download model artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: model-${{ github.sha }}
+          path: .
 
       # MLflow: простой файловый трекинг
       - name: Train & log to MLflow
