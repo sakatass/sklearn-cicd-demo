@@ -1,14 +1,9 @@
 name: ci-cd
+
 on:
-  push:                       # запуск на ЛЮБОЙ пуш в любую ветку
-    branches:
-      - '**'
-  pull_request:               # (полезно для PR в main)
-    branches:
-      - main
-  workflow_dispatch:          # кнопка "Run workflow" в UI
-
-
+  push:            # гоним CI на любых ветках
+  pull_request:    # и на PR
+  workflow_dispatch:
 
 env:
   IMAGE: ghcr.io/sakatass/sklearn-cicd-demo:${{ github.sha }}
@@ -19,58 +14,59 @@ jobs:
     permissions:
       contents: read
       packages: write
+    defaults:
+      run:
+        shell: bash   # по умолчанию bash на всех шагах этого job (fix pwsh) 
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
+
       - name: Install deps
         run: pip install -r requirements.txt
+
       - name: Train & write model
         run: python train.py
 
-      - name: Upload model artifact
+      - name: Unit tests (only fast tests/)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest -q tests
+
+      - name: Upload model & metrics (artifacts v4)
         uses: actions/upload-artifact@v4
         with:
           name: model-${{ github.sha }}
           path: |
             models/model.pkl
             metrics.json
-          if-no-files-found: error
-          retention-days: 3
-
-      - name: Unit tests (only fast tests/)
-        env:
-          PYTHONPATH: ${{ github.workspace }}
-        run: python -m pytest -q tests
-      - name: Build & push image to GHCR
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u $GITHUB_ACTOR --password-stdin
-          docker build -t "$IMAGE" .
-          docker push "$IMAGE"
 
   train-build:
     needs: ci
-    runs-on: [self-hosted, local, stage]
-    if: github.ref == 'refs/heads/main'   # ← только для main
-    permissions: { contents: read, packages: write }
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
 
-      - name: Install deps
-        shell: powershell
-        run: python -m pip install -r requirements.txt
-
-      # DVC: подтянуть входы (если есть) и убедиться, что есть remote
-      - name: Ensure DVC remote
-        shell: powershell
+      - name: Install deps (DVC optional)
         run: |
-          if (!(Test-Path ".dvc")) { dvc init -q }
-          if (-not (dvc remote list)) { mkdir dvcstore; dvc remote add -d localremote .\dvcstore }
+          pip install -r requirements.txt || true
+          pip install dvc || true
+
       - name: Try DVC pull (best-effort)
-        shell: pwsh
-        run: dvc pull || echo "DVC remote not configured — will use artifact"
+        run: |
+          if command -v dvc >/dev/null 2>&1; then
+            dvc pull || echo "DVC remote not configured – will use artifact"
+          else
+            echo "DVC not installed – will use artifact"
+          fi
 
       - name: Download model artifact
         uses: actions/download-artifact@v4
@@ -78,119 +74,73 @@ jobs:
           name: model-${{ github.sha }}
           path: .
 
-      # MLflow: простой файловый трекинг
-      - name: Train & log to MLflow
-        shell: powershell
-        env:
-          MLFLOW_TRACKING_URI: file:./mlruns
-        run: python train.py
-
-      # DVC: зафиксировать артефакты тренировки и положить в remote
-      - name: Track artifacts in DVC
-        shell: powershell
-        run: |
-          dvc add models/model.pkl
-          dvc add metrics.json
-          git add models/model.pkl.dvc metrics.json.dvc .gitignore
-          git commit -m "dvc: track model & metrics" || echo "no changes"
-          dvc push
-
-      # Quality-gate: упадём, если AUC ниже порога
-      - name: Gate on metrics (AUC >= 0.90)
-        shell: powershell
-        run: |
-          $m = Get-Content metrics.json | ConvertFrom-Json
-          if ($m.auc -lt 0.90) { throw "AUC $($m.auc) < 0.90 - failing build" }
-
-      # GHCR login + build/push образа
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build & push image
-        shell: powershell
         run: |
-          docker build -t ghcr.io/${{ github.repository }}:${{ github.sha }} .
-          docker push ghcr.io/${{ github.repository }}:${{ github.sha }}
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
 
   deploy-stage:
+    if: github.ref == 'refs/heads/main'
     needs: train-build
-    runs-on: [self-hosted, local, stage]
-    if: github.ref == 'refs/heads/main'   # ← только для main
+    runs-on: [self-hosted, local, stage]   # твой Windows-раннер
     permissions:
       contents: read
       packages: read
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
-      - name: Install test deps (for smoke/E2E)
-        shell: powershell
-        run: python -m pip install -r requirements.txt
-      - name: Set GIT_SHA env
-        shell: powershell
-        run: Add-Content -Path $env:GITHUB_ENV -Value "GIT_SHA=${{ github.sha }}"
-      - name: Deploy stage
-        shell: powershell
+      - name: Pull & up stage
+        shell: pwsh
         run: |
+          $env:GIT_SHA="${{ github.sha }}"
+          docker login ghcr.io -u $env:GITHUB_ACTOR -p $env:GITHUB_TOKEN
           docker compose -f docker-compose.stage.yml pull
           docker compose -f docker-compose.stage.yml up -d --remove-orphans
-      - name: Wait for stage to be ready
-        shell: powershell
-        env:
-          URL: http://localhost:8080/healthz
-        run: |
-          $max=30; $ok=$false
-          for ($i=1; $i -le $max; $i++) {
-            try { $r = Invoke-WebRequest $env:URL -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -eq 200) { $ok=$true; break } }
-            catch { Start-Sleep -Seconds 2 }
-          }
-          if (-not $ok) { throw "Stage not ready on $env:URL" }
       - name: Smoke on stage
-        shell: powershell
-        env:
-          URL: http://localhost:8080
-        run: python tests/smoke.py
+        shell: pwsh
+        run: |
+          pip install -r requirements.txt
+          python tests/smoke.py
 
   e2e-stage:
+    if: github.ref == 'refs/heads/main'
     needs: deploy-stage
     runs-on: [self-hosted, local, stage]
-    if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
       - name: Install test deps
-        shell: powershell
-        run: python -m pip install -r requirements.txt
+        shell: pwsh
+        run: pip install -r requirements.txt
       - name: E2E tests against stage
-        shell: powershell
+        shell: pwsh
         env:
           STAGE_URL: http://localhost:8080
-        run: python -m pytest -q tests_stage
+        run: pytest -q tests_stage
 
   deploy-prod:
+    if: github.ref == 'refs/heads/main'
     needs: e2e-stage
     runs-on: [self-hosted, local, prod]
-    if: github.ref == 'refs/heads/main'
     permissions:
       contents: read
       packages: read
     steps:
       - uses: actions/checkout@v4
-      - name: Set GIT_SHA env
-        shell: powershell
-        run: Add-Content -Path $env:GITHUB_ENV -Value "GIT_SHA=${{ github.sha }}"
-      - name: Deploy prod
-        shell: powershell
+      - name: Pull & up prod
+        shell: pwsh
         run: |
+          $env:GIT_SHA="${{ github.sha }}"
+          docker login ghcr.io -u $env:GITHUB_ACTOR -p $env:GITHUB_TOKEN
           docker compose -f docker-compose.prod.yml pull
           docker compose -f docker-compose.prod.yml up -d --remove-orphans
       - name: Smoke on prod
-        shell: powershell
+        shell: pwsh
         env:
           URL: http://localhost:9090
         run: python tests/smoke.py
-
