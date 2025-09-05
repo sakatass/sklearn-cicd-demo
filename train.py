@@ -1,18 +1,30 @@
-import os, json, joblib
+import os, json, yaml, joblib
+import mlflow, mlflow.sklearn
 from sklearn.datasets import make_classification
 from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import roc_auc_score
 
-def train_and_save(C=0.7, random_state=42):
-    X, y = make_classification(n_samples=5000, n_features=20, random_state=random_state)
-    Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, random_state=random_state, stratify=y)
-    clf = LogisticRegression(max_iter=500, C=C, random_state=random_state).fit(Xtr, ytr)
-    os.makedirs("models", exist_ok=True)
-    joblib.dump(clf, "models/model.pkl")
-    auc = roc_auc_score(yte, clf.predict_proba(Xte)[:,1])
-    with open("metrics.json","w") as f: json.dump({"auc": float(auc)}, f, indent=2)
-    print("AUC:", round(auc, 6))
+with open("params.yaml") as f:
+    P = yaml.safe_load(f)["train"]
 
-if __name__ == "__main__":
-    train_and_save()
+X, y = make_classification(n_samples=2000, n_features=20,
+                           n_informative=8, random_state=P["random_state"])
+Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=P["test_size"],
+                                      random_state=P["random_state"])
+
+clf = RandomForestClassifier(n_estimators=P["n_estimators"],
+                             random_state=P["random_state"]).fit(Xtr, ytr)
+auc = roc_auc_score(yte, clf.predict_proba(Xte)[:, 1])
+
+os.makedirs("models", exist_ok=True)
+joblib.dump(clf, "models/model.pkl")
+with open("metrics.json", "w") as f:
+    json.dump({"auc": float(auc)}, f)
+
+# MLflow: параметры, метрики, модель
+with mlflow.start_run(run_name="train-rf") as run:
+    mlflow.log_params(P)
+    mlflow.log_metrics({"auc": auc})
+    mlflow.sklearn.log_model(clf, artifact_path="model")
+    print("MLFLOW_RUN_ID", run.info.run_id)

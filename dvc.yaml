@@ -1,0 +1,14 @@
+stages:
+  train:
+    cmd: python train.py
+    deps:
+      - train.py
+      - params.yaml
+    outs:
+      - models/model.pkl
+    metrics:
+      - metrics.json
+    params:
+      - train.n_estimators
+      - train.test_size
+      - train.random_state
