@@ -1,10 +1,13 @@
 name: ci-cd
 on:
-  push:
-    branches: [ main ]          # как было
-  pull_request:                 # ← добавь, чтобы ран шел на PR в main
-    branches: [ main ]
-  workflow_dispatch:            # (опционально) ручной запуск из UI
+  push:                       # запуск на ЛЮБОЙ пуш в любую ветку
+    branches:
+      - '**'
+  pull_request:               # (полезно для PR в main)
+    branches:
+      - main
+  workflow_dispatch:          # кнопка "Run workflow" в UI
+
 
 
 env:
@@ -37,6 +40,7 @@ jobs:
   train-build:
     needs: ci
     runs-on: [self-hosted, local, stage]
+    if: github.ref == 'refs/heads/main'   # ← только для main
     permissions: { contents: read, packages: write }
     steps:
       - uses: actions/checkout@v4
@@ -95,9 +99,9 @@ jobs:
           docker push ghcr.io/${{ github.repository }}:${{ github.sha }}
 
   deploy-stage:
-    if: github.event_name == 'push'
     needs: train-build
     runs-on: [self-hosted, local, stage]
+    if: github.ref == 'refs/heads/main'   # ← только для main
     permissions:
       contents: read
       packages: read
@@ -134,9 +138,9 @@ jobs:
         run: python tests/smoke.py
 
   e2e-stage:
-    if: github.event_name == 'push'
     needs: deploy-stage
     runs-on: [self-hosted, local, stage]
+    if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -151,9 +155,9 @@ jobs:
         run: python -m pytest -q tests_stage
 
   deploy-prod:
-    if: github.event_name == 'push'
     needs: e2e-stage
     runs-on: [self-hosted, local, prod]
+    if: github.ref == 'refs/heads/main'
     permissions:
       contents: read
       packages: read
