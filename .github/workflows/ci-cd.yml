@@ -1,8 +1,14 @@
 name: ci-cd
 on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
+  push:                       # запуск на ЛЮБОЙ пуш в любую ветку
+    branches:
+      - '**'
+  pull_request:               # (полезно для PR в main)
+    branches:
+      - main
+  workflow_dispatch:          # кнопка "Run workflow" в UI
+
+
 
 env:
   IMAGE: ghcr.io/sakatass/sklearn-cicd-demo:${{ github.sha }}
@@ -31,10 +37,71 @@ jobs:
           docker build -t "$IMAGE" .
           docker push "$IMAGE"
 
-  deploy-stage:
-    if: github.event_name == 'push'
+  train-build:
     needs: ci
     runs-on: [self-hosted, local, stage]
+    if: github.ref == 'refs/heads/main'   # ← только для main
+    permissions: { contents: read, packages: write }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      - name: Install deps
+        shell: powershell
+        run: python -m pip install -r requirements.txt
+
+      # DVC: подтянуть входы (если есть) и убедиться, что есть remote
+      - name: Ensure DVC remote
+        shell: powershell
+        run: |
+          if (!(Test-Path ".dvc")) { dvc init -q }
+          if (-not (dvc remote list)) { mkdir dvcstore; dvc remote add -d localremote .\dvcstore }
+      - name: DVC pull
+        shell: powershell
+        run: dvc pull
+
+      # MLflow: простой файловый трекинг
+      - name: Train & log to MLflow
+        shell: powershell
+        env:
+          MLFLOW_TRACKING_URI: file:./mlruns
+        run: python train.py
+
+      # DVC: зафиксировать артефакты тренировки и положить в remote
+      - name: Track artifacts in DVC
+        shell: powershell
+        run: |
+          dvc add models/model.pkl
+          dvc add metrics.json
+          git add models/model.pkl.dvc metrics.json.dvc .gitignore
+          git commit -m "dvc: track model & metrics" || echo "no changes"
+          dvc push
+
+      # Quality-gate: упадём, если AUC ниже порога
+      - name: Gate on metrics (AUC >= 0.90)
+        shell: powershell
+        run: |
+          $m = Get-Content metrics.json | ConvertFrom-Json
+          if ($m.auc -lt 0.90) { throw "AUC $($m.auc) < 0.90 - failing build" }
+
+      # GHCR login + build/push образа
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build & push image
+        shell: powershell
+        run: |
+          docker build -t ghcr.io/${{ github.repository }}:${{ github.sha }} .
+          docker push ghcr.io/${{ github.repository }}:${{ github.sha }}
+
+  deploy-stage:
+    needs: train-build
+    runs-on: [self-hosted, local, stage]
+    if: github.ref == 'refs/heads/main'   # ← только для main
     permissions:
       contents: read
       packages: read
@@ -71,9 +138,9 @@ jobs:
         run: python tests/smoke.py
 
   e2e-stage:
-    if: github.event_name == 'push'
     needs: deploy-stage
     runs-on: [self-hosted, local, stage]
+    if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -88,9 +155,9 @@ jobs:
         run: python -m pytest -q tests_stage
 
   deploy-prod:
-    if: github.event_name == 'push'
     needs: e2e-stage
     runs-on: [self-hosted, local, prod]
+    if: github.ref == 'refs/heads/main'
     permissions:
       contents: read
       packages: read

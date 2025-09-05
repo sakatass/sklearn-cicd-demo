@@ -1,0 +1,9 @@
+# игнорим всё тяжёлое/лишнее
+mlruns/
+dvcstore/
+.git/
+tests/
+tests_stage/
+__pycache__/
+*.ipynb
+/metrics.json
